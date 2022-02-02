@@ -7,8 +7,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 MOCK_TARGET = cp.ones(1, dtype=np.int32)
 
-
-@cuda.jit(device=True)
+# Utility functions needed for inside the CUDA kernel, maybe move to different file?
+@cuda.jit(device=True, fastmath=True)
 def gpu_sum(a):
     res = 0
     for x in a:
@@ -16,9 +16,39 @@ def gpu_sum(a):
     return res
 
 
-@cuda.jit(device=True)
+@cuda.jit(device=True, fastmath=True)
 def gpu_mean(a):
     return gpu_sum(a) / a.size
+
+
+# TODO: Either remove this or figure out a GPU suitable algorithm
+# def column_kl_divergence_exact_prior(
+#    count_indices,
+#    count_data,
+#    baseline_probabilities,
+#    prior_strength=0.1,
+#    target=MOCK_TARGET,
+# ):
+#    observed_norm = count_data.sum() + prior_strength
+#    observed_zero_constant = (prior_strength / observed_norm) * cp.log(
+#        prior_strength / observed_norm
+#    )
+#    result = 0.0
+#    count_indices_set = set(count_indices)
+#    for i in range(baseline_probabilities.shape[0]):
+#        if i in count_indices_set:
+#            idx = cp.searchsorted(count_indices, i)
+#            observed_probability = (
+#               count_data[idx] + prior_strength * baseline_probabilities[i]
+#            ) / observed_norm
+#            if observed_probability > 0.0:
+#                result += observed_probability * cp.log(
+#                    observed_probability / baseline_probabilities[i]
+#                )
+#        else:
+#            result += baseline_probabilities[i] * observed_zero_constant
+#
+#    return result
 
 
 @cuda.jit(fastmath=True)
@@ -59,6 +89,7 @@ def column_kl_divergence_approx_prior_kernel(
             )
 
 
+# TODO: GPU version of supervised column kl
 def gpu_supervised_column_kl(
     count_indices,
     count_data,
@@ -93,13 +124,14 @@ def gpu_column_weights(
     threadsperblock = 32
     blockspergrid = (weights.size + (threadsperblock - 1)) // threadsperblock
 
+    # Supervised info weight not implemented yet
     column_kl_divergence_func[blockspergrid, threadsperblock](
         indptr,
         indices,
         data,
         baseline_probabilities,
         prior_strength,
-        # target=target,
+        #       target,
         weights,
     )
     return weights
@@ -146,20 +178,20 @@ def gpu_information_weight(
         The learned weights to be applied to columns based on the amount
         of information provided by the column.
     """
-    # if approximate_prior:
-    column_kl_divergence_func = column_kl_divergence_approx_prior_kernel
-    # else:
-    #     column_kl_divergence_func = gpu_column_kl_divergence_exact_prior_kernel
+    if approximate_prior:
+        column_kl_divergence_func = column_kl_divergence_approx_prior_kernel
+    else:
+        raise NotImplementedError(
+            "GPUInformationWeightTransformer doesn't support exact prior computation yet."
+        )
 
     baseline_counts = cp.squeeze(cp.array(data.sum(axis=1)))
     if target is None:
         baseline_probabilities = baseline_counts / baseline_counts.sum()
-    # else:
-    #    baseline_probabilities = cp.zeros(target.max() + 1)
-    #   for i in range(baseline_probabilities.shape[0]):
-    #      baseline_probabilities[i] = baseline_counts[target == i].sum()
-    # baseline_probabilities /= baseline_probabilities.sum()
-    # column_kl_divergence_func = supervised_column_kl_kernel
+    else:
+        raise NotImplementedError(
+            "GPUInformationWeightTransformer doesn't support supervision yet."
+        )
 
     csc_data = data.tocsc()
     csc_data.sort_indices()
@@ -173,6 +205,7 @@ def gpu_information_weight(
         prior_strength=prior_strength,
         target=target,
     )
+
     return weights
 
 
